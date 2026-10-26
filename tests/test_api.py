@@ -2,19 +2,31 @@ import time
 from dataclasses import replace
 
 import pytest
-from helpers import make_pdf, upload, wait_for
+from fastapi.testclient import TestClient
+from helpers import make_pdf, run_worker, upload
 from music21 import converter, stream
 
-from omr_service.jobs import JobStore, QueueFull
+from omr_service import jobs
+from omr_service.app import create_app
+from omr_service.storage import LocalStore
 
 
-def test_converts_a_two_page_pdf(client):
+def submit(client, pages=2):
+    res = upload(client, make_pdf(pages))
+    assert res.status_code == 202, res.json()
+    return res.json()["id"]
+
+
+def test_converts_a_two_page_pdf(client, store, settings):
     res = upload(client, make_pdf(2))
     assert res.status_code == 202
     job_id = res.json()["id"]
     assert res.headers["location"] == f"/omr/{job_id}"
+    assert client.get(f"/omr/{job_id}").json()["status"] == "queued"
+    assert client.get(f"/omr/{job_id}/musicxml").status_code == 409
 
-    body = wait_for(client, job_id)
+    run_worker(store, settings)
+    body = client.get(f"/omr/{job_id}").json()
     assert body["status"] == "done", body
     assert body["pages_done"] == 2 and body["pages_total"] == 2
     assert body["warnings"] == []
@@ -27,17 +39,20 @@ def test_converts_a_two_page_pdf(client):
     assert [m.number for m in measures] == [1, 2]
 
 
-def test_skips_a_page_homr_cannot_read(client, monkeypatch):
+def test_skips_a_page_homr_cannot_read(client, store, settings, monkeypatch):
     monkeypatch.setenv("FAKE_HOMR_FAIL", "p01")
-    body = wait_for(client, upload(client, make_pdf(2)).json()["id"])
+    job_id = submit(client)
+    run_worker(store, settings)
+    body = client.get(f"/omr/{job_id}").json()
     assert body["status"] == "done"
     assert body["warnings"] == ["page 1 skipped: no staffs found"]
 
 
-def test_fails_when_no_page_can_be_read(client, monkeypatch):
+def test_fails_when_no_page_can_be_read(client, store, settings, monkeypatch):
     monkeypatch.setenv("FAKE_HOMR_FAIL", "p01,p02")
-    job_id = upload(client, make_pdf(2)).json()["id"]
-    body = wait_for(client, job_id)
+    job_id = submit(client)
+    run_worker(store, settings)
+    body = client.get(f"/omr/{job_id}").json()
     assert body["status"] == "failed"
     assert body["error"] == "no music found on any page"
     assert client.get(f"/omr/{job_id}/musicxml").status_code == 409
@@ -54,9 +69,10 @@ def test_rejects_bad_uploads(client, data, code):
     assert "error" in res.json()
 
 
-def test_unknown_job(client):
-    assert client.get("/omr/nope").status_code == 404
-    assert client.get("/omr/nope/musicxml").status_code == 404
+@pytest.mark.parametrize("job_id", ["nope", "0" * 32, "..%2F..%2Fetc"])
+def test_unknown_job(client, job_id):
+    assert client.get(f"/omr/{job_id}").status_code == 404
+    assert client.get(f"/omr/{job_id}/musicxml").status_code == 404
 
 
 def test_cors_allows_only_the_site(client):
@@ -67,23 +83,52 @@ def test_cors_allows_only_the_site(client):
     assert "access-control-allow-origin" not in other.headers
 
 
-def test_queue_is_bounded(settings):
-    store = JobStore(settings)  # worker not started, so jobs stay queued
-    store.submit("a", "a", 1)
-    store.submit("b", "b", 1)
-    with pytest.raises(QueueFull):
-        store.submit("c", "c", 1)
+def test_queue_is_bounded(client):
+    submit(client)
+    submit(client)
+    res = upload(client, make_pdf(1))
+    assert res.status_code == 503
+    assert res.headers["retry-after"] == "60"
 
 
-def test_finished_jobs_expire(settings):
-    store = JobStore(replace(settings, result_ttl_s=3600))
-    job = store.submit("a", "a", 1)
-    job.status, job.finished = "done", time.time() - 3601
-    assert store.get("a") is None
+def test_jobs_survive_a_restart(client, settings):
+    job_id = submit(client)
+    # a new API and worker with nothing in memory, as after a restart or scaling to zero
+    fresh_store = LocalStore(settings.store_dir)
+    run_worker(fresh_store, settings)
+    with TestClient(create_app(settings, fresh_store)) as fresh:
+        assert fresh.get(f"/omr/{job_id}").json()["status"] == "done"
+        assert fresh.get(f"/omr/{job_id}/musicxml").status_code == 200
 
 
-def test_finished_jobs_are_kept_when_ttl_is_zero(settings):
-    store = JobStore(replace(settings, result_ttl_s=0))
-    job = store.submit("a", "a", 1)
-    job.status, job.finished = "done", time.time() - 10 * 24 * 3600
-    assert store.get("a") is job
+def test_job_is_retried_after_the_worker_stops(client, store, settings):
+    job_id = submit(client)
+    store.receive(0)  # a worker takes the job and stops before finishing; its lease runs out at once
+    run_worker(store, settings)
+    assert client.get(f"/omr/{job_id}").json()["status"] == "done"
+
+
+def test_gives_up_after_max_attempts(client, store, settings):
+    job_id = submit(client)
+    for _ in range(settings.max_attempts):
+        store.receive(0)
+    run_worker(store, settings)
+    body = client.get(f"/omr/{job_id}").json()
+    assert body["status"] == "failed"
+    assert body["error"] == f"gave up after {settings.max_attempts} attempts"
+
+
+def test_finished_jobs_expire(client, store, settings):
+    job_id = submit(client)
+    run_worker(store, settings)
+    status = jobs.load(store, job_id)
+    status["finished"] = time.time() - 3601
+    jobs.save(store, status)
+    assert client.get(f"/omr/{job_id}").status_code == 200  # TTL 0 keeps them
+    with TestClient(create_app(replace(settings, result_ttl_s=3600), store)) as expiring:
+        assert expiring.get(f"/omr/{job_id}").status_code == 404
+
+
+def test_job_records_an_owner_field(client, store):
+    job_id = submit(client)
+    assert jobs.load(store, job_id)["owner"] is None  # set once the website has accounts

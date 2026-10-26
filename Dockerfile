@@ -18,4 +18,5 @@ COPY omr_service ./omr_service
 
 ENV WORK_DIR=/tmp
 EXPOSE 8000
+# the API; the worker runs the same image with: python -m omr_service.worker
 CMD ["uvicorn", "omr_service.app:app", "--host", "0.0.0.0", "--port", "8000"]

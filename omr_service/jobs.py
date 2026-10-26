@@ -1,104 +1,56 @@
-"""In-memory jobs, converted one at a time by a background thread (homr needs about 1 GB per page)."""
+"""Jobs are kept in storage, not in memory, so they survive restarts and scaling to zero.
+Each job has jobs/<id>/input.pdf, jobs/<id>/status.json and, once done, jobs/<id>/result.musicxml;
+its id goes on the queue, and a worker (worker.py) converts it."""
 
-import logging
-import queue
-import shutil
-import threading
+import json
+import re
 import time
-from dataclasses import dataclass, field
 
-from .pipeline import ConversionError, convert
-
-log = logging.getLogger("omr")
+MUSICXML_TYPE = "application/vnd.recordare.musicxml+xml"
+PUBLIC_FIELDS = ("id", "status", "pages_total", "pages_done", "error", "warnings")
 
 
 class QueueFull(Exception):
     pass
 
 
-@dataclass
-class Job:
-    id: str
-    filename: str
-    pages_total: int
-    status: str = "queued"  # queued -> running -> done | failed
-    pages_done: int = 0
-    error: str | None = None
-    warnings: list[str] = field(default_factory=list)
-    result: bytes | None = None
-    finished: float | None = None
-
-    def public(self):
-        return {"id": self.id, "status": self.status, "pages_total": self.pages_total,
-                "pages_done": self.pages_done, "error": self.error, "warnings": self.warnings}
+def valid_id(job_id):
+    return re.fullmatch(r"[0-9a-f]{32}", job_id) is not None
 
 
-class JobStore:
-    def __init__(self, settings):
-        self.settings = settings
-        self._jobs = {}
-        self._lock = threading.Lock()
-        self._queue = queue.Queue()
-        self._stop = threading.Event()
+def blob(job_id, name):
+    return f"jobs/{job_id}/{name}"
 
-    def job_dir(self, job_id):
-        return self.settings.work_dir / job_id
 
-    def start(self):
-        threading.Thread(target=self._run, name="omr-worker", daemon=True).start()
+def submit(store, settings, job_id, filename, pdf, pages_total, owner=None):
+    if store.queue_length() >= settings.max_queued_jobs:
+        raise QueueFull
+    store.put(blob(job_id, "input.pdf"), pdf, "application/pdf")
+    status = {
+        "id": job_id, "status": "queued",  # queued -> running -> done | failed
+        "pages_total": pages_total, "pages_done": 0, "error": None, "warnings": [],
+        "filename": filename,
+        "owner": owner,  # the signed-in user, once the website has accounts
+        "created": time.time(), "finished": None,
+    }
+    save(store, status)
+    store.send(job_id)
+    return status
 
-    def stop(self):
-        self._stop.set()
 
-    def submit(self, job_id, filename, pages_total):
-        with self._lock:
-            waiting = sum(1 for j in self._jobs.values() if j.status in ("queued", "running"))
-            if waiting >= self.settings.max_queued_jobs:
-                raise QueueFull
-            job = self._jobs[job_id] = Job(job_id, filename, pages_total)
-        self._queue.put(job_id)
-        return job
+def load(store, job_id):
+    data = store.get(blob(job_id, "status.json"))
+    return json.loads(data) if data else None
 
-    def get(self, job_id):
-        self._purge()
-        with self._lock:
-            return self._jobs.get(job_id)
 
-    def _purge(self):
-        if self.settings.result_ttl_s <= 0:
-            return
-        cutoff = time.time() - self.settings.result_ttl_s
-        with self._lock:
-            for job_id in [j.id for j in self._jobs.values() if j.finished and j.finished < cutoff]:
-                del self._jobs[job_id]
+def save(store, status):
+    store.put(blob(status["id"], "status.json"), json.dumps(status).encode(), "application/json")
 
-    def _run(self):
-        while not self._stop.is_set():
-            try:
-                job_id = self._queue.get(timeout=30)
-            except queue.Empty:
-                self._purge()
-                continue
-            with self._lock:
-                job = self._jobs.get(job_id)
-            if job:
-                self._process(job)
 
-    def _process(self, job):
-        job.status = "running"
-        work = self.job_dir(job.id)
+def public(status):
+    return {key: status[key] for key in PUBLIC_FIELDS}
 
-        def on_page(done, total):
-            job.pages_done = done
 
-        try:
-            job.result, job.warnings = convert(work / "input.pdf", work, self.settings, on_page)
-            job.status = "done"
-        except ConversionError as ex:
-            job.error, job.status = str(ex), "failed"
-        except Exception:
-            log.exception("job %s failed", job.id)
-            job.error, job.status = "internal error", "failed"
-        finally:
-            job.finished = time.time()
-            shutil.rmtree(work, ignore_errors=True)
+def expired(status, settings):
+    ttl = settings.result_ttl_s
+    return ttl > 0 and status["finished"] is not None and status["finished"] < time.time() - ttl

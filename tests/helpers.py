@@ -1,4 +1,4 @@
-import time
+from omr_service.worker import process_next
 
 
 def make_pdf(pages):
@@ -21,11 +21,7 @@ def upload(client, data, name="Sonata.pdf"):
     return client.post("/omr", files={"file": (name, data, "application/pdf")})
 
 
-def wait_for(client, job_id, timeout=60):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        body = client.get(f"/omr/{job_id}").json()
-        if body["status"] in ("done", "failed"):
-            return body
-        time.sleep(0.1)
-    raise AssertionError(f"job {job_id} did not finish in {timeout} s")
+def run_worker(store, settings):
+    """Converts every queued job, as the worker does when the queue has messages."""
+    while process_next(store, settings):
+        pass

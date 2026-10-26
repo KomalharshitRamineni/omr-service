@@ -6,8 +6,21 @@ annotated-types==0.8.0
     # via pydantic
 anyio==4.15.1
     # via starlette
+azure-core==1.41.0
+    # via
+    #   azure-identity
+    #   azure-storage-blob
+    #   azure-storage-queue
+azure-identity==1.26.0
+    # via -r requirements.in
+azure-storage-blob==12.31.0
+    # via -r requirements.in
+azure-storage-queue==12.18.0
+    # via -r requirements.in
 certifi==2026.10.23
     # via requests
+cffi==2.1.1
+    # via cryptography
 chardet==7.7.0
     # via music21
 charset-normalizer==3.5.2
@@ -20,6 +33,13 @@ colorlog==6.12.0
     # via rapidocr
 contourpy==1.4.0
     # via matplotlib
+cryptography==50.0.2
+    # via
+    #   azure-identity
+    #   azure-storage-blob
+    #   azure-storage-queue
+    #   msal
+    #   pyjwt
 cycler==0.12.1
     # via matplotlib
 fastapi==0.162.0
@@ -36,6 +56,10 @@ idna==3.20
     # via
     #   anyio
     #   requests
+isodate==0.7.2
+    # via
+    #   azure-storage-blob
+    #   azure-storage-queue
 joblib==1.6.0
     # via music21
 jsonpickle==4.1.4
@@ -46,6 +70,12 @@ matplotlib==3.11.2
     # via music21
 more-itertools==11.2.1
     # via music21
+msal==1.39.0
+    # via
+    #   azure-identity
+    #   msal-extensions
+msal-extensions==1.3.1
+    # via azure-identity
 music21==10.5.1
     # via -r requirements.in
 musicxml==1.4
@@ -83,10 +113,14 @@ protobuf==7.36.2
     # via onnxruntime
 pyclipper==1.4.0
     # via rapidocr
+pycparser==3.12
+    # via cffi
 pydantic==2.14.1
     # via fastapi
 pydantic-core==2.50.1
     # via pydantic
+pyjwt==2.15.1
+    # via msal
 pyparsing==3.3.3
     # via matplotlib
 python-dateutil==3.0.0
@@ -101,7 +135,9 @@ rapidocr==3.10.0
     # via homr
 requests==2.34.2
     # via
+    #   azure-core
     #   homr
+    #   msal
     #   music21
     #   rapidocr
 shapely==2.2.0
@@ -119,6 +155,10 @@ types-pillow==10.2.0.20240822
 typing-extensions==4.16.0
     # via
     #   anyio
+    #   azure-core
+    #   azure-identity
+    #   azure-storage-blob
+    #   azure-storage-queue
     #   fastapi
     #   homr
     #   opentelemetry-api

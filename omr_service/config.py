@@ -31,9 +31,17 @@ class Settings:
     max_upload_mb: int = field(default_factory=lambda: _int("MAX_UPLOAD_MB", 100))
     max_pages: int = field(default_factory=lambda: _int("MAX_PAGES", 200))
     max_queued_jobs: int = field(default_factory=lambda: _int("MAX_QUEUED_JOBS", 100))
-    # 0 keeps finished jobs until the service restarts
+    # 0 keeps finished jobs
     result_ttl_s: int = field(default_factory=lambda: _int("RESULT_TTL_SECONDS", 0))
     page_timeout_s: int = field(default_factory=lambda: _int("PAGE_TIMEOUT_SECONDS", 900))
     retry_after_s: int = field(default_factory=lambda: _int("RETRY_AFTER_SECONDS", 60))
+    # deliveries of a job's message before the worker gives up on it
+    max_attempts: int = field(default_factory=lambda: _int("MAX_ATTEMPTS", 3))
     render_dpi: int = field(default_factory=lambda: _int("RENDER_DPI", 300))
+    # temporary files while converting
     work_dir: Path = field(default_factory=lambda: Path(os.environ.get("WORK_DIR", tempfile.gettempdir())) / "omr-jobs")
+    # jobs live in this Azure Storage account; if it is empty, in a local folder instead
+    storage_account: str = field(default_factory=lambda: os.environ.get("STORAGE_ACCOUNT", ""))
+    blob_container: str = field(default_factory=lambda: os.environ.get("BLOB_CONTAINER", "jobs"))
+    queue_name: str = field(default_factory=lambda: os.environ.get("QUEUE_NAME", "omr-jobs"))
+    store_dir: Path = field(default_factory=lambda: Path(os.environ.get("STORE_DIR", Path(tempfile.gettempdir()) / "omr-store")))

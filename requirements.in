@@ -3,3 +3,6 @@ uvicorn
 python-multipart
 music21
 homr==0.7.0
+azure-identity
+azure-storage-blob
+azure-storage-queue
