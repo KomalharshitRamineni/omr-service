@@ -72,7 +72,7 @@ def create_app(settings=None):
             return error(422, str(ex))
         except QueueFull:
             shutil.rmtree(job_dir, ignore_errors=True)
-            return error(503, "the service is busy; try again in a few minutes", {"Retry-After": "60"})
+            return error(503, "the service is busy; try again in a few minutes", {"Retry-After": str(settings.retry_after_s)})
         return JSONResponse(job.public(), status_code=202, headers={"Location": f"/omr/{job.id}"})
 
     @app.get("/omr/{job_id}")

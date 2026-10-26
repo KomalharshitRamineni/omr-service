@@ -2,7 +2,7 @@
 
 Turns a PDF of sheet music into one MusicXML file. Each page is rendered with poppler's `pdftoppm`, read by [homr](https://github.com/liebharc/homr) 0.7.0 (run as a separate program, on the CPU), and the pages are joined into one score with music21.
 
-Jobs are processed one at a time and kept in memory for an hour after they finish.
+Jobs are processed one at a time. Finished jobs are kept in memory until the service restarts, unless `RESULT_TTL_SECONDS` is set.
 
 ## API
 
@@ -25,14 +25,14 @@ Errors are JSON `{"error": "…"}`:
 
 | Code | When |
 |---|---|
-| 404 | unknown job, or finished more than an hour ago |
+| 404 | unknown job, or its result has expired or was lost when the service restarted |
 | 409 | MusicXML asked for before the job is `done` |
-| 413 | file over 20 MB, or more than 20 pages |
+| 413 | file over `MAX_UPLOAD_MB`, or more than `MAX_PAGES` pages |
 | 415 | not a PDF |
 | 422 | a PDF that can't be read |
-| 503 | queue full (10 jobs); retry after `Retry-After` seconds |
+| 503 | `MAX_QUEUED_JOBS` jobs already waiting; retry after `Retry-After` seconds |
 
-Browsers may call it only from the origins in `ALLOWED_ORIGINS`. A page takes about 15 s.
+Browsers may call it only from the origins in `ALLOWED_ORIGINS`. Expect about 15 s per page on the CPU (measured with homr 0.7.0; not a limit), so poll every few seconds.
 
 Example from the browser:
 
@@ -52,12 +52,15 @@ if (status.status === "done") {
 
 ## Configuration (environment variables)
 
+Every limit is a setting. The defaults are deliberately generous while we test; tighten them later through the environment.
+
 | Variable | Default |
 |---|---|
 | `ALLOWED_ORIGINS` | `https://kind-island-00d8a3f03.2.azurestaticapps.net` (comma-separated) |
 | `HOMR_CMD` | `homr` |
-| `MAX_UPLOAD_MB` / `MAX_PAGES` / `MAX_QUEUED_JOBS` | `20` / `20` / `10` |
-| `RESULT_TTL_SECONDS` / `PAGE_TIMEOUT_SECONDS` / `RENDER_DPI` | `3600` / `300` / `300` |
+| `MAX_UPLOAD_MB` / `MAX_PAGES` / `MAX_QUEUED_JOBS` | `100` / `200` / `100` |
+| `RESULT_TTL_SECONDS` | `0` (keep finished jobs until the service restarts) |
+| `PAGE_TIMEOUT_SECONDS` / `RETRY_AFTER_SECONDS` / `RENDER_DPI` | `900` / `60` / `300` |
 | `WORK_DIR` | the system temp folder |
 
 ## Run locally

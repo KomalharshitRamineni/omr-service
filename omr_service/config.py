@@ -27,10 +27,13 @@ class Settings:
     allowed_origins: list[str] = field(
         default_factory=lambda: [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", SITE_ORIGIN).split(",") if o.strip()]
     )
-    max_upload_mb: int = field(default_factory=lambda: _int("MAX_UPLOAD_MB", 20))
-    max_pages: int = field(default_factory=lambda: _int("MAX_PAGES", 20))
-    max_queued_jobs: int = field(default_factory=lambda: _int("MAX_QUEUED_JOBS", 10))
-    result_ttl_s: int = field(default_factory=lambda: _int("RESULT_TTL_SECONDS", 3600))
-    page_timeout_s: int = field(default_factory=lambda: _int("PAGE_TIMEOUT_SECONDS", 300))
+    # generous defaults while testing; tighten them later through the environment
+    max_upload_mb: int = field(default_factory=lambda: _int("MAX_UPLOAD_MB", 100))
+    max_pages: int = field(default_factory=lambda: _int("MAX_PAGES", 200))
+    max_queued_jobs: int = field(default_factory=lambda: _int("MAX_QUEUED_JOBS", 100))
+    # 0 keeps finished jobs until the service restarts
+    result_ttl_s: int = field(default_factory=lambda: _int("RESULT_TTL_SECONDS", 0))
+    page_timeout_s: int = field(default_factory=lambda: _int("PAGE_TIMEOUT_SECONDS", 900))
+    retry_after_s: int = field(default_factory=lambda: _int("RETRY_AFTER_SECONDS", 60))
     render_dpi: int = field(default_factory=lambda: _int("RENDER_DPI", 300))
     work_dir: Path = field(default_factory=lambda: Path(os.environ.get("WORK_DIR", tempfile.gettempdir())) / "omr-jobs")

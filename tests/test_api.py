@@ -1,4 +1,5 @@
 import time
+from dataclasses import replace
 
 import pytest
 from helpers import make_pdf, upload, wait_for
@@ -75,7 +76,14 @@ def test_queue_is_bounded(settings):
 
 
 def test_finished_jobs_expire(settings):
-    store = JobStore(settings)
+    store = JobStore(replace(settings, result_ttl_s=3600))
     job = store.submit("a", "a", 1)
-    job.status, job.finished = "done", time.time() - settings.result_ttl_s - 1
+    job.status, job.finished = "done", time.time() - 3601
     assert store.get("a") is None
+
+
+def test_finished_jobs_are_kept_when_ttl_is_zero(settings):
+    store = JobStore(replace(settings, result_ttl_s=0))
+    job = store.submit("a", "a", 1)
+    job.status, job.finished = "done", time.time() - 10 * 24 * 3600
+    assert store.get("a") is job

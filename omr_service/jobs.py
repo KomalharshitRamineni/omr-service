@@ -65,6 +65,8 @@ class JobStore:
             return self._jobs.get(job_id)
 
     def _purge(self):
+        if self.settings.result_ttl_s <= 0:
+            return
         cutoff = time.time() - self.settings.result_ttl_s
         with self._lock:
             for job_id in [j.id for j in self._jobs.values() if j.finished and j.finished < cutoff]:
