@@ -6,7 +6,12 @@ time signature that only repeats the one already in force at a page start is dro
 join does not add symbols the printed score does not have.
 """
 
-from music21 import clef, converter, key, meter, stream
+from music21 import clef, converter, defaults, key, metadata, meter, stream
+
+# No made-up header in the output: without these, music21 titles a score after its first page's
+# file ("p01.musicxml") or "Music21 Fragment", and names "Music21" as the composer.
+defaults.title = ""
+defaults.author = ""
 
 
 def _same(a, b):
@@ -53,4 +58,5 @@ def join(pages):
     for part in parts:
         for number, m in enumerate(part.getElementsByClass(stream.Measure), 1):
             m.number = number
+    out.metadata = metadata.Metadata()
     return out, warnings

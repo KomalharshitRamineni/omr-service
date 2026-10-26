@@ -35,6 +35,7 @@ def test_converts_a_two_page_pdf(client, store, settings):
     assert xml.status_code == 200
     assert xml.headers["content-type"].startswith("application/vnd.recordare.musicxml+xml")
     assert 'filename="Sonata.musicxml"' in xml.headers["content-disposition"]
+    assert b"<creator" not in xml.content and b"<movement-title" not in xml.content  # no music21 defaults
     measures = converter.parse(xml.content, format="musicxml").parts[0].getElementsByClass(stream.Measure)
     assert [m.number for m in measures] == [1, 2]
 
