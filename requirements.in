@@ -1,0 +1,5 @@
+fastapi
+uvicorn
+python-multipart
+music21
+homr==0.7.0

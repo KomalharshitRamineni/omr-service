@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+.pytest_cache/
+# never commit scores: test PDFs stay local
+samples/
+*.pdf
+*.musicxml
