@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Creates the OMR service in Azure. Each step can be re-run. Run one step at a time with
-#   SUB=<subscription id> deploy/azure.sh <step>      (steps 1-7; see below)
+#   SUB=<subscription id> deploy/azure.sh <step>      (steps 1-7 create; step 8 updates; see below)
 # Needs the Azure CLI signed in (`az login`) as someone who can create resources and assign roles.
 set -euo pipefail
 
@@ -15,6 +15,11 @@ API=omr-api
 JOB=omr-worker
 TAG=${TAG:-$(git -C "$(dirname "$0")" rev-parse --short HEAD)}
 IMAGE=$ACR.azurecr.io/omr-service:$TAG
+# Worker size and how often its trigger checks the queue. homr uses about 4 cores per page, so 4 vCPU;
+# billed only while a job runs. Checking every 5 s instead of 30 s shortens the wait before a job starts.
+WORKER_CPU=4
+WORKER_MEMORY=8Gi
+QUEUE_POLL_S=5
 
 az() { command az "$@" --subscription "$SUB"; }
 identity() { az identity show -g $RG -n $ID --query "$1" -o tsv; }
@@ -62,7 +67,7 @@ case ${1:?give a step number} in
     fi
     az containerapp show -g $RG -n $API --query properties.configuration.ingress.fqdn -o tsv ;;
 
-7)  # worker: a Container Apps job started by queue messages (checked every 30 s); each run converts
+7)  # worker: a Container Apps job started by queue messages (checked every $QUEUE_POLL_S s); each run converts
     # jobs until the queue is empty. Retries come from the queue (MAX_ATTEMPTS), not from the job.
     yaml=$(mktemp --suffix .yaml)
     cat > "$yaml" <<EOF
@@ -86,7 +91,7 @@ properties:
       scale:
         minExecutions: 0
         maxExecutions: 2
-        pollingInterval: 30
+        pollingInterval: $QUEUE_POLL_S
         rules:
           - name: queue
             type: azure-queue
@@ -101,8 +106,8 @@ properties:
         image: $IMAGE
         command: ["python", "-m", "omr_service.worker"]
         resources:
-          cpu: 2
-          memory: 4Gi
+          cpu: $WORKER_CPU
+          memory: $WORKER_MEMORY
         env:
           - name: STORAGE_ACCOUNT
             value: $SA
@@ -111,6 +116,12 @@ properties:
 EOF
     az containerapp job create -g $RG -n $JOB --yaml "$yaml" -o none
     rm -f "$yaml" ;;
+
+8)  # update after a commit: build the image, point the API and the worker at it, apply the worker settings
+    az acr build -r $ACR -t omr-service:$TAG -t omr-service:latest "$(dirname "$0")/.."
+    az containerapp update -g $RG -n $API --image "$IMAGE" -o none
+    az containerapp job update -g $RG -n $JOB --image "$IMAGE" --cpu $WORKER_CPU --memory $WORKER_MEMORY \
+        --polling-interval $QUEUE_POLL_S -o none ;;
 
 *)  echo "unknown step: $1" >&2; exit 1 ;;
 esac
