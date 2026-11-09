@@ -10,9 +10,13 @@ ties a note that runs past its bar line into the next bar and beams whole parts 
 that homr over-filled (more beats than the time signature) it adds notes that are not in the score,
 or stops with an error (MeterException, KeyError), and the job fails after every page has been read.
 Beams and tuplet brackets are made bar by bar instead, and a bar that cannot be beamed is left as read.
+
+check_bars() lists the bars that hold more beats than their time signature, so a teacher knows where to
+look first. On three pieces checked against the original Sibelius files (2026-11-09) all 6 bars it listed
+were misread; it misses errors that do not over-fill a bar.
 """
 
-from music21 import clef, converter, defaults, key, metadata, meter, stream
+from music21 import clef, converter, defaults, key, metadata, meter, note, stream
 from music21.stream import makeNotation
 
 # No made-up header in the output: without these, music21 titles a score after its first page's
@@ -70,25 +74,37 @@ def join(pages):
 
 
 def _notate(score):
-    """Accidentals, beams and tuplet brackets, bar by bar. Returns the number of bars left unbeamed."""
-    unbeamed = 0
+    """Accidentals, beams and tuplet brackets, bar by bar."""
     for part in score.parts:
         part.makeAccidentals(inPlace=True)
         for m in part.getElementsByClass(stream.Measure):
             try:
                 m.makeBeams(inPlace=True)
             except Exception:  # an over-filled bar: keep it as homr read it
-                unbeamed += 1
+                pass
             for container in [m, *m.voices]:
                 makeNotation.makeTupletBrackets(container, inPlace=True)
-    return unbeamed
+
+
+def check_bars(score):
+    """Numbers of the bars that hold more beats than their time signature in any part. A bar holding only
+    one rest is skipped: a whole-bar rest is drawn the same in every metre, and homr reads it as 4 beats."""
+    bars = set()
+    for part in score.parts:
+        for m in part.getElementsByClass(stream.Measure):
+            items = list(m.recurse().notesAndRests)
+            if len(items) == 1 and isinstance(items[0], note.Rest):
+                continue
+            time = m.timeSignature or m.getContextByClass(meter.TimeSignature)
+            if time and m.highestTime > time.barDuration.quarterLength + 1e-6:
+                bars.add(m.number)
+    return sorted(bars)
 
 
 def write_joined(pages, path):
-    """Joins the pages and writes one MusicXML file to path. Returns warnings."""
+    """Joins the pages and writes one MusicXML file to path. Returns (warnings, bars to check)."""
     score, warnings = join(pages)
-    unbeamed = _notate(score)
+    _notate(score)
+    bars = check_bars(score)
     score.write("musicxml", fp=str(path), makeNotation=False)
-    if unbeamed:
-        warnings.append(f"{unbeamed} bar(s) hold more beats than the time signature (probably misread); left unbeamed")
-    return warnings
+    return warnings, bars

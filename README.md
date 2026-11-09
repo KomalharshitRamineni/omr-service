@@ -21,10 +21,10 @@ Jobs live in Azure Storage, not in memory: `jobs/<id>/input.pdf`, `status.json` 
 Job status:
 
 ```json
-{"id": "b5f84d…", "status": "running", "pages_total": 2, "pages_done": 1, "error": null, "warnings": []}
+{"id": "b5f84d…", "status": "running", "pages_total": 2, "pages_done": 1, "error": null, "warnings": [], "check_bars": []}
 ```
 
-`status` goes `queued` → `running` → `done` or `failed`. Pages homr can't read are skipped and listed in `warnings`. A job fails only if no page can be read.
+`status` goes `queued` → `running` → `done` or `failed`. Pages homr can't read are skipped and listed in `warnings`. A job fails only if no page can be read. Once `done`, `check_bars` lists the bars (numbered from 1, as in the MusicXML) that hold more beats than their time signature: almost certainly misread, so the first places to correct. It does not list every error.
 
 Errors are JSON `{"error": "…"}`:
 

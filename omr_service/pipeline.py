@@ -43,7 +43,7 @@ def run_homr(png, homr_cmd, timeout):
 
 
 def convert(pdf, work_dir, settings, on_page=None):
-    """Returns (musicxml_bytes, warnings). Pages homr can't read are skipped with a warning;
+    """Returns (musicxml_bytes, warnings, bars to check). Pages homr can't read are skipped with a warning;
     the conversion fails only if no page can be read."""
     pages = page_count(pdf)
     done, warnings = [], []
@@ -62,7 +62,7 @@ def convert(pdf, work_dir, settings, on_page=None):
         raise ConversionError("no music found on any page")
     out_path = Path(work_dir) / "result.musicxml"
     try:
-        join_warnings = write_joined(done, out_path)
+        join_warnings, check = write_joined(done, out_path)
     except Exception as ex:  # the same pages would fail the same way, so the job is not retried
         raise ConversionError(f"could not join the pages into one score ({type(ex).__name__})") from ex
-    return out_path.read_bytes(), warnings + join_warnings
+    return out_path.read_bytes(), warnings + join_warnings, check

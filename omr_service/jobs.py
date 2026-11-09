@@ -7,7 +7,7 @@ import re
 import time
 
 MUSICXML_TYPE = "application/vnd.recordare.musicxml+xml"
-PUBLIC_FIELDS = ("id", "status", "pages_total", "pages_done", "error", "warnings")
+PUBLIC_FIELDS = ("id", "status", "pages_total", "pages_done", "error", "warnings", "check_bars")
 
 
 class QueueFull(Exception):
@@ -28,7 +28,7 @@ def submit(store, settings, job_id, filename, pdf, pages_total, owner=None):
     store.put(blob(job_id, "input.pdf"), pdf, "application/pdf")
     status = {
         "id": job_id, "status": "queued",  # queued -> running -> done | failed
-        "pages_total": pages_total, "pages_done": 0, "error": None, "warnings": [],
+        "pages_total": pages_total, "pages_done": 0, "error": None, "warnings": [], "check_bars": [],
         "filename": filename,
         "owner": owner,  # the signed-in user, once the website has accounts
         "created": time.time(), "finished": None,
@@ -48,7 +48,7 @@ def save(store, status):
 
 
 def public(status):
-    return {key: status[key] for key in PUBLIC_FIELDS}
+    return {key: status.get(key, [] if key == "check_bars" else None) for key in PUBLIC_FIELDS}  # older jobs lack check_bars
 
 
 def expired(status, settings):

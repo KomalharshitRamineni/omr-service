@@ -20,8 +20,9 @@ from .storage import make_store
 log = logging.getLogger("omr.worker")
 
 
-def finish(store, status, error=None, warnings=()):
-    status.update(status="failed" if error else "done", error=error, warnings=list(warnings), finished=time.time())
+def finish(store, status, error=None, warnings=(), check_bars=()):
+    status.update(status="failed" if error else "done", error=error, warnings=list(warnings),
+                  check_bars=list(check_bars), finished=time.time())
     jobs.save(store, status)
 
 
@@ -53,9 +54,9 @@ def process_next(store, settings):
             jobs.save(store, status)
             store.extend(message, lease)
 
-        result, warnings = convert(pdf, work, settings, on_page)
+        result, warnings, check_bars = convert(pdf, work, settings, on_page)
         store.put(jobs.blob(status["id"], "result.musicxml"), result, jobs.MUSICXML_TYPE)
-        finish(store, status, warnings=warnings)
+        finish(store, status, warnings=warnings, check_bars=check_bars)
     except ConversionError as ex:
         finish(store, status, error=str(ex))
     except Exception:
