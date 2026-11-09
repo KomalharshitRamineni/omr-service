@@ -4,7 +4,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from .join import join
+from .join import write_joined
 
 
 class ConversionError(Exception):
@@ -60,7 +60,9 @@ def convert(pdf, work_dir, settings, on_page=None):
             on_page(page, pages)
     if not done:
         raise ConversionError("no music found on any page")
-    score, join_warnings = join(done)
     out_path = Path(work_dir) / "result.musicxml"
-    score.write("musicxml", fp=str(out_path))
+    try:
+        join_warnings = write_joined(done, out_path)
+    except Exception as ex:  # the same pages would fail the same way, so the job is not retried
+        raise ConversionError(f"could not join the pages into one score ({type(ex).__name__})") from ex
     return out_path.read_bytes(), warnings + join_warnings

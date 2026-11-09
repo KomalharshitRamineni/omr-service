@@ -4,9 +4,16 @@ homr reads one page at a time, so each page's bars start again at 1. The first p
 are kept; later pages' measures are appended to the part in the same position. A clef, key or
 time signature that only repeats the one already in force at a page start is dropped, so the
 join does not add symbols the printed score does not have.
+
+write_joined() writes the joined score without music21's own clean-up at write time. That clean-up
+ties a note that runs past its bar line into the next bar and beams whole parts at once; on a bar
+that homr over-filled (more beats than the time signature) it adds notes that are not in the score,
+or stops with an error (MeterException, KeyError), and the job fails after every page has been read.
+Beams and tuplet brackets are made bar by bar instead, and a bar that cannot be beamed is left as read.
 """
 
 from music21 import clef, converter, defaults, key, metadata, meter, stream
+from music21.stream import makeNotation
 
 # No made-up header in the output: without these, music21 titles a score after its first page's
 # file ("p01.musicxml") or "Music21 Fragment", and names "Music21" as the composer.
@@ -60,3 +67,28 @@ def join(pages):
             m.number = number
     out.metadata = metadata.Metadata()
     return out, warnings
+
+
+def _notate(score):
+    """Accidentals, beams and tuplet brackets, bar by bar. Returns the number of bars left unbeamed."""
+    unbeamed = 0
+    for part in score.parts:
+        part.makeAccidentals(inPlace=True)
+        for m in part.getElementsByClass(stream.Measure):
+            try:
+                m.makeBeams(inPlace=True)
+            except Exception:  # an over-filled bar: keep it as homr read it
+                unbeamed += 1
+            for container in [m, *m.voices]:
+                makeNotation.makeTupletBrackets(container, inPlace=True)
+    return unbeamed
+
+
+def write_joined(pages, path):
+    """Joins the pages and writes one MusicXML file to path. Returns warnings."""
+    score, warnings = join(pages)
+    unbeamed = _notate(score)
+    score.write("musicxml", fp=str(path), makeNotation=False)
+    if unbeamed:
+        warnings.append(f"{unbeamed} bar(s) hold more beats than the time signature (probably misread); left unbeamed")
+    return warnings
