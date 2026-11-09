@@ -15,10 +15,11 @@ API=omr-api
 JOB=omr-worker
 TAG=${TAG:-$(git -C "$(dirname "$0")" rev-parse --short HEAD)}
 IMAGE=$ACR.azurecr.io/omr-service:$TAG
-# Worker size and how often its trigger checks the queue. homr uses about 4 cores per page, so 4 vCPU;
-# billed only while a job runs. Checking every 5 s instead of 30 s shortens the wait before a job starts.
-WORKER_CPU=4
-WORKER_MEMORY=8Gi
+# Worker size and how often its trigger checks the queue. 4 vCPU / 8 GiB was tried on 2026-11-09 and pages
+# were no faster (124 s for the same 5 pages), so 2 vCPU. Checking every 5 s instead of 30 s shortened the
+# wait before a job starts from about 55 s to about 31 s.
+WORKER_CPU=2
+WORKER_MEMORY=4Gi
 QUEUE_POLL_S=5
 
 az() { command az "$@" --subscription "$SUB"; }
