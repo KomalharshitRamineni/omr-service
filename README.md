@@ -37,7 +37,7 @@ Errors are JSON `{"error": "…"}`:
 | 422 | a PDF that can't be read |
 | 503 | `MAX_QUEUED_JOBS` jobs already queued or running; retry after `Retry-After` seconds |
 
-Browsers may call it only from the origins in `ALLOWED_ORIGINS`. Expect about 15 s per page on the CPU (measured with homr 0.7.0; not a limit), so poll every few seconds.
+Browsers may call it only from the origins in `ALLOWED_ORIGINS`. Expect about 15–19 s per page on 2 CPUs (homr 0.7.1, measured on a laptop under a CPU limit; not a limit), less with `PAGE_WORKERS`, so poll every few seconds.
 
 Example from the browser:
 
@@ -62,7 +62,9 @@ Every limit is a setting. The defaults are deliberately generous while we test; 
 | Variable | Default |
 |---|---|
 | `ALLOWED_ORIGINS` | `https://kind-island-00d8a3f03.2.azurestaticapps.net` (comma-separated) |
-| `HOMR_CMD` | `homr` |
+| `HOMR_CMD` | homr through `omr_service.homr_runner` (sets its thread count) |
+| `PAGE_WORKERS` | `1` (pages converted at the same time; the Azure worker uses `2` on 4 vCPU) |
+| `HOMR_THREADS` | ONNX Runtime threads per homr process; default: the container's CPUs divided by `PAGE_WORKERS` |
 | `MAX_UPLOAD_MB` / `MAX_PAGES` / `MAX_QUEUED_JOBS` | `100` / `200` / `100` |
 | `RESULT_TTL_SECONDS` | `0` (keep finished jobs) |
 | `PAGE_TIMEOUT_SECONDS` / `RETRY_AFTER_SECONDS` / `RENDER_DPI` | `900` / `60` / `300` |

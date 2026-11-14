@@ -50,7 +50,7 @@ fonttools==4.67.0
     # via matplotlib
 h11==0.16.0
     # via uvicorn
-homr==0.7.0
+homr==0.7.1
     # via -r requirements.in
 idna==3.20
     # via
@@ -78,8 +78,6 @@ msal-extensions==1.3.1
     # via azure-identity
 music21==10.5.1
     # via -r requirements.in
-musicxml==1.4
-    # via homr
 numpy==2.5.4
     # via
     #   contourpy
@@ -92,7 +90,7 @@ numpy==2.5.4
     #   shapely
 omegaconf==2.4.0
     # via rapidocr
-onnxruntime==1.31.0
+onnxruntime==1.32.0
     # via homr
 opencv-python-headless==4.14.0.94
     # via
@@ -123,6 +121,8 @@ pyjwt==2.15.1
     # via msal
 pyparsing==3.3.3
     # via matplotlib
+pypdfium2==5.15.2
+    # via homr
 python-dateutil==3.0.0
     # via matplotlib
 python-multipart==0.0.32

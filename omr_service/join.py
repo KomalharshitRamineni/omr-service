@@ -3,7 +3,9 @@
 homr reads one page at a time, so each page's bars start again at 1. The first page's parts
 are kept; later pages' measures are appended to the part in the same position. A clef, key or
 time signature that only repeats the one already in force at a page start is dropped, so the
-join does not add symbols the printed score does not have.
+join does not add symbols the printed score does not have. So is a time signature homr estimated for a
+later page that prints none (homr 0.7.1 writes one from the page's median bar length, e.g. 3/4 on the
+pages after a 6/8 first page): the time signature already in force is kept.
 
 write_joined() writes the joined score without music21's own clean-up at write time. That clean-up
 ties a note that runs past its bar line into the next bar and beams whole parts at once; on a bar
@@ -15,6 +17,8 @@ check_bars() lists the bars that hold more beats than their time signature, so a
 look first. On three pieces checked against the original Sibelius files (2026-11-09) all 6 bars it listed
 were misread; it misses errors that do not over-fill a bar.
 """
+
+import xml.etree.ElementTree as ET
 
 from music21 import clef, converter, defaults, key, metadata, meter, note, stream
 from music21.stream import makeNotation
@@ -44,6 +48,23 @@ def _parse(path):
     return score
 
 
+def _estimated_time(path):
+    """For each part (in order): did homr estimate the page's opening time signature rather than read it?
+    homr 0.7.1 writes a time signature it read with the clef and key, and one it estimated (no time signature
+    on the page) in the first <attributes> of the first bar, with <divisions> and without a clef."""
+    try:
+        parts = ET.parse(path).getroot().findall("part")
+    except (ET.ParseError, OSError):
+        return []
+    estimated = []
+    for part in parts:
+        bar = part.find("measure")
+        first = bar.find("attributes") if bar is not None else None
+        estimated.append(first is not None and first.find("divisions") is not None
+                         and first.find("time") is not None and first.find("clef") is None)
+    return estimated
+
+
 def join(pages):
     """pages: list of (page_number, path). Returns (music21 score, warnings)."""
     warnings = []
@@ -54,15 +75,18 @@ def join(pages):
         page_parts = list(_parse(path).parts)
         if len(page_parts) != len(parts):
             warnings.append(f"page {page_no} has {len(page_parts)} part(s), page {first_no} has {len(parts)}")
-        for target, source in zip(parts, page_parts):
+        estimated = _estimated_time(path)
+        for index, (target, source) in enumerate(zip(parts, page_parts)):
             measures = list(source.getElementsByClass(stream.Measure))
             if not measures:
                 continue
             first = measures[0]
             for cls in (clef.Clef, key.KeySignature, meter.TimeSignature):
                 current = target.recurse().getElementsByClass(cls).last()
+                guessed = cls is meter.TimeSignature and current is not None \
+                    and index < len(estimated) and estimated[index]
                 for obj in list(first.recurse().getElementsByClass(cls)):
-                    if obj.offset == 0 and _same(obj, current):
+                    if obj.offset == 0 and (_same(obj, current) or guessed):
                         obj.activeSite.remove(obj)
             for m in measures:
                 target.append(m)

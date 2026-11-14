@@ -1,10 +1,15 @@
-"""PDF -> MusicXML: render each page with pdftoppm, run homr on it, join the pages."""
+"""PDF -> MusicXML: render each page with pdftoppm, run homr on it, join the pages.
+With PAGE_WORKERS > 1, that many pages are converted at the same time, each by its own homr process."""
 
 import os
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from .join import write_joined
+
+
+PACKAGE_PARENT = Path(__file__).resolve().parent.parent
 
 
 class ConversionError(Exception):
@@ -27,9 +32,11 @@ def render_page(pdf, page, out_png, dpi):
     )
 
 
-def run_homr(png, homr_cmd, timeout):
+def run_homr(png, homr_cmd, timeout, threads=0):
     """Run homr as a separate process; it writes <image>.musicxml next to the image."""
-    env = dict(os.environ, CUDA_VISIBLE_DEVICES="", PYTHONWARNINGS="ignore")
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES="", PYTHONWARNINGS="ignore", HOMR_ORT_THREADS=str(threads))
+    # homr runs from the page's folder; let `python -m omr_service.homr_runner` find this package
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(PACKAGE_PARENT), env.get("PYTHONPATH")]))
     try:
         proc = subprocess.run(homr_cmd + [str(png)], cwd=png.parent, env=env, capture_output=True, text=True,
                               timeout=timeout)
@@ -46,18 +53,27 @@ def convert(pdf, work_dir, settings, on_page=None):
     """Returns (musicxml_bytes, warnings, bars to check). Pages homr can't read are skipped with a warning;
     the conversion fails only if no page can be read."""
     pages = page_count(pdf)
-    done, warnings = [], []
-    for page in range(1, pages + 1):
+
+    def convert_page(page):
         page_dir = Path(work_dir) / f"p{page:02d}"
         page_dir.mkdir(parents=True, exist_ok=True)
         png = page_dir / f"p{page:02d}.png"
-        try:
-            render_page(pdf, page, png, settings.render_dpi)
-            done.append((page, run_homr(png, settings.homr_cmd, settings.page_timeout_s)))
-        except (ConversionError, subprocess.CalledProcessError) as ex:
-            warnings.append(f"page {page} skipped: {ex}")
-        if on_page:
-            on_page(page, pages)
+        render_page(pdf, page, png, settings.render_dpi)
+        return run_homr(png, settings.homr_cmd, settings.page_timeout_s, settings.homr_threads)
+
+    results, failures = {}, {}
+    with ThreadPoolExecutor(max_workers=settings.page_workers) as pool:
+        futures = {pool.submit(convert_page, page): page for page in range(1, pages + 1)}
+        for finished, future in enumerate(as_completed(futures), 1):
+            page = futures[future]
+            try:
+                results[page] = future.result()
+            except (ConversionError, subprocess.CalledProcessError) as ex:
+                failures[page] = f"page {page} skipped: {ex}"
+            if on_page:
+                on_page(finished, pages)
+    done = sorted(results.items())
+    warnings = [failures[page] for page in sorted(failures)]
     if not done:
         raise ConversionError("no music found on any page")
     out_path = Path(work_dir) / "result.musicxml"

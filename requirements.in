@@ -2,7 +2,7 @@ fastapi
 uvicorn
 python-multipart
 music21
-homr==0.7.0
+homr[cpu]==0.7.1
 azure-identity
 azure-storage-blob
 azure-storage-queue

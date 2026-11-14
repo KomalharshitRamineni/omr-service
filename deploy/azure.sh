@@ -15,11 +15,14 @@ API=omr-api
 JOB=omr-worker
 TAG=${TAG:-$(git -C "$(dirname "$0")" rev-parse --short HEAD)}
 IMAGE=$ACR.azurecr.io/omr-service:$TAG
-# Worker size and how often its trigger checks the queue. 4 vCPU / 8 GiB was tried on 2026-11-09 and pages
-# were no faster (124 s for the same 5 pages), so 2 vCPU. Checking every 5 s instead of 30 s shortened the
-# wait before a job starts from about 55 s to about 31 s.
-WORKER_CPU=2
-WORKER_MEMORY=4Gi
+# Worker size, pages converted at once, and how often its trigger checks the queue. 4 vCPU / 8 GiB alone was
+# tried on 2026-11-09 and pages were no faster: homr's ONNX Runtime started a thread per host core, more than
+# the container's CPUs. With the thread count set per process (homr_runner), 2 pages at once on 4 CPUs took
+# 55 s for 5 test pages against 143 s for one page at a time on 2 CPUs (laptop under a CPU limit, 2026-11-13).
+# Checking every 5 s instead of 30 s shortened the wait before a job starts from about 55 s to about 31 s.
+WORKER_CPU=4
+WORKER_MEMORY=8Gi
+PAGE_WORKERS=2
 QUEUE_POLL_S=5
 
 az() { command az "$@" --subscription "$SUB"; }
@@ -114,6 +117,8 @@ properties:
             value: $SA
           - name: AZURE_CLIENT_ID
             value: $(identity clientId)
+          - name: PAGE_WORKERS
+            value: "$PAGE_WORKERS"
 EOF
     az containerapp job create -g $RG -n $JOB --yaml "$yaml" -o none
     rm -f "$yaml" ;;
@@ -122,7 +127,7 @@ EOF
     az acr build -r $ACR -t omr-service:$TAG -t omr-service:latest "$(dirname "$0")/.."
     az containerapp update -g $RG -n $API --image "$IMAGE" -o none
     az containerapp job update -g $RG -n $JOB --image "$IMAGE" --cpu $WORKER_CPU --memory $WORKER_MEMORY \
-        --polling-interval $QUEUE_POLL_S -o none ;;
+        --polling-interval $QUEUE_POLL_S --set-env-vars PAGE_WORKERS=$PAGE_WORKERS -o none ;;
 
 *)  echo "unknown step: $1" >&2; exit 1 ;;
 esac

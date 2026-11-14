@@ -38,6 +38,36 @@ def test_joined_pages_are_beamed(tmp_path):
     assert len(list(score.recurse().getElementsByClass(meter.TimeSignature))) == 1
 
 
+def homr071_page(path, time, printed, bars):
+    """A page as homr 0.7.1 writes it: a time signature it read comes with the clef and key; one it estimated
+    (none printed on the page) comes first, with <divisions>."""
+    time_xml = f"<time><beats>{time[0]}</beats><beat-type>{time[1]}</beat-type></time>"
+    first = f"<attributes><divisions>2</divisions>{'' if printed else time_xml}</attributes>" \
+            f"<attributes><clef><sign>G</sign><line>2</line></clef><key><fifths>0</fifths></key>" \
+            f"{time_xml if printed else ''}</attributes>"
+    measures = "".join(f'<measure number="{i}">{first if i == 1 else ""}{bar}</measure>' for i, bar in enumerate(bars, 1))
+    path.write_text('<?xml version="1.0" encoding="UTF-8"?><score-partwise version="4.0">'
+                    '<part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>'
+                    f'<part id="P1">{measures}</part></score-partwise>')
+    return path
+
+
+def test_an_estimated_time_signature_on_a_later_page_is_dropped(tmp_path):
+    pages = [(1, homr071_page(tmp_path / "p01.musicxml", (6, 8), True, [quavers("CDEFGA")])),
+             (2, homr071_page(tmp_path / "p02.musicxml", (3, 4), False, [quavers("GABCDE")]))]
+    out = tmp_path / "result.musicxml"
+    write_joined(pages, out)
+    assert [t.ratioString for t in converter.parse(out).recurse().getElementsByClass(meter.TimeSignature)] == ["6/8"]
+
+
+def test_a_printed_time_signature_change_on_a_later_page_is_kept(tmp_path):
+    pages = [(1, homr071_page(tmp_path / "p01.musicxml", (6, 8), True, [quavers("CDEFGA")])),
+             (2, homr071_page(tmp_path / "p02.musicxml", (3, 4), True, [quavers("GABCDE")]))]
+    out = tmp_path / "result.musicxml"
+    write_joined(pages, out)
+    assert [t.ratioString for t in converter.parse(out).recurse().getElementsByClass(meter.TimeSignature)] == ["6/8", "3/4"]
+
+
 def test_lists_bars_with_more_beats_than_the_time_signature(tmp_path):
     pages = [(1, page(tmp_path / "p01.musicxml", True, [quavers("CDEF"), WHOLE_REST])),
              (2, page(tmp_path / "p02.musicxml", False, [quavers("GABCD"), quavers("EF")]))]
