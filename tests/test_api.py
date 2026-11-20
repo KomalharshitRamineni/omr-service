@@ -109,14 +109,15 @@ def test_job_is_retried_after_the_worker_stops(client, store, settings):
     assert client.get(f"/omr/{job_id}").json()["status"] == "done"
 
 
-def test_gives_up_after_max_attempts(client, store, settings):
-    job_id = submit(client)
+def test_gives_up_on_a_page_after_max_attempts(client, store, settings):
+    job_id = submit(client, pages=1)
     for _ in range(settings.max_attempts):
-        store.receive(0)
+        store.receive(0)  # a worker takes the page and stops each time
     run_worker(store, settings)
     body = client.get(f"/omr/{job_id}").json()
     assert body["status"] == "failed"
-    assert body["error"] == f"gave up after {settings.max_attempts} attempts"
+    assert body["error"] == "no music found on any page"
+    assert body["warnings"] == [f"page 1 skipped: gave up after {settings.max_attempts} attempts"]
 
 
 def test_finished_jobs_expire(client, store, settings):

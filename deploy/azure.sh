@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Creates the OMR service in Azure. Each step can be re-run. Run one step at a time with
-#   SUB=<subscription id> deploy/azure.sh <step>      (steps 1-7 create; step 8 updates; see below)
+#   SUB=<subscription id> deploy/azure.sh <step>      (steps 1-7 create; step 8 updates; 9-11 below)
 # Needs the Azure CLI signed in (`az login`) as someone who can create resources and assign roles.
 set -euo pipefail
 
@@ -12,7 +12,14 @@ SA=stomrservice
 ID=id-omr-service
 ENV=cae-omr-service
 API=omr-api
-JOB=omr-worker
+# Each page is a message on QUEUE; the page worker job runs as many copies as the queue needs (up to
+# MAX_WORKERS), so the pages of one PDF are read at the same time. Until 2026-11-20 one worker (OLD_JOB, queue
+# OLD_QUEUE) read a whole PDF; it is kept for rolling back (step 11).
+JOB=omr-page-worker
+QUEUE=omr-pages
+OLD_JOB=omr-worker
+OLD_QUEUE=omr-jobs
+TEST_API=omr-api-next
 TAG=${TAG:-$(git -C "$(dirname "$0")" rev-parse --short HEAD)}
 IMAGE=$ACR.azurecr.io/omr-service:$TAG
 # Worker size, pages converted at once, and how often its trigger checks the queue. 4 vCPU / 8 GiB alone was
@@ -24,6 +31,7 @@ WORKER_CPU=4
 WORKER_MEMORY=8Gi
 PAGE_WORKERS=2
 QUEUE_POLL_S=5
+MAX_WORKERS=10
 
 az() { command az "$@" --subscription "$SUB"; }
 identity() { az identity show -g $RG -n $ID --query "$1" -o tsv; }
@@ -42,7 +50,7 @@ case ${1:?give a step number} in
     az storage account create -g $RG -n $SA -l $LOC --sku Standard_LRS --kind StorageV2 --access-tier Hot \
         --min-tls-version TLS1_2 --allow-blob-public-access false --allow-shared-key-access false --https-only true -o none
     az storage container create -n jobs --account-name $SA --auth-mode login -o none
-    az storage queue create -n omr-jobs --account-name $SA --auth-mode login -o none ;;
+    az storage queue create -n $QUEUE --account-name $SA --auth-mode login -o none ;;
 
 4)  # managed identity used by the API and the worker: read and write jobs, pull the image
     az identity create -g $RG -n $ID -l $LOC -o none
@@ -63,7 +71,7 @@ case ${1:?give a step number} in
     az containerapp create -g $RG -n $API --environment $ENV --image "$IMAGE" \
         --user-assigned "$(identity id)" --registry-server $ACR.azurecr.io --registry-identity "$(identity id)" \
         --ingress external --target-port 8000 --cpu 0.5 --memory 1Gi --min-replicas 0 --max-replicas 2 \
-        --env-vars STORAGE_ACCOUNT=$SA AZURE_CLIENT_ID="$(identity clientId)" -o none
+        --env-vars STORAGE_ACCOUNT=$SA QUEUE_NAME=$QUEUE AZURE_CLIENT_ID="$(identity clientId)" -o none
     # Until the source is public, allow only one address:  MY_IP=<address> deploy/azure.sh 6
     if [ -n "${MY_IP:-}" ]; then
         az containerapp ingress access-restriction set -g $RG -n $API --rule-name only-me \
@@ -71,8 +79,9 @@ case ${1:?give a step number} in
     fi
     az containerapp show -g $RG -n $API --query properties.configuration.ingress.fqdn -o tsv ;;
 
-7)  # worker: a Container Apps job started by queue messages (checked every $QUEUE_POLL_S s); each run converts
-    # jobs until the queue is empty. Retries come from the queue (MAX_ATTEMPTS), not from the job.
+7)  # page worker: a Container Apps job started by queue messages (checked every $QUEUE_POLL_S s), one run per
+    # PAGE_WORKERS pages waiting, up to MAX_WORKERS runs; each run converts pages until the queue is empty.
+    # Retries come from the queue (MAX_ATTEMPTS), not from the job.
     yaml=$(mktemp --suffix .yaml)
     cat > "$yaml" <<EOF
 location: $LOC
@@ -94,15 +103,15 @@ properties:
       replicaCompletionCount: 1
       scale:
         minExecutions: 0
-        maxExecutions: 2
+        maxExecutions: $MAX_WORKERS
         pollingInterval: $QUEUE_POLL_S
         rules:
           - name: queue
             type: azure-queue
             metadata:
               accountName: $SA
-              queueName: omr-jobs
-              queueLength: "1"
+              queueName: $QUEUE
+              queueLength: "$PAGE_WORKERS"
             identity: $(identity id)
   template:
     containers:
@@ -117,17 +126,34 @@ properties:
             value: $SA
           - name: AZURE_CLIENT_ID
             value: $(identity clientId)
+          - name: QUEUE_NAME
+            value: $QUEUE
           - name: PAGE_WORKERS
             value: "$PAGE_WORKERS"
 EOF
     az containerapp job create -g $RG -n $JOB --yaml "$yaml" -o none
     rm -f "$yaml" ;;
 
-8)  # update after a commit: build the image, point the API and the worker at it, apply the worker settings
+8)  # update after a commit: build the image, point the API and the page worker at it, apply the worker settings
     az acr build -r $ACR -t omr-service:$TAG -t omr-service:latest "$(dirname "$0")/.."
-    az containerapp update -g $RG -n $API --image "$IMAGE" -o none
+    az containerapp update -g $RG -n $API --image "$IMAGE" --set-env-vars QUEUE_NAME=$QUEUE -o none
     az containerapp job update -g $RG -n $JOB --image "$IMAGE" --cpu $WORKER_CPU --memory $WORKER_MEMORY \
-        --polling-interval $QUEUE_POLL_S --set-env-vars PAGE_WORKERS=$PAGE_WORKERS -o none ;;
+        --polling-interval $QUEUE_POLL_S --max-executions $MAX_WORKERS \
+        --set-env-vars QUEUE_NAME=$QUEUE PAGE_WORKERS=$PAGE_WORKERS -o none ;;
+
+9)  # a second API beside the live one, for trying a new image before switching (step 10); scales to zero
+    az containerapp create -g $RG -n $TEST_API --environment $ENV --image "$IMAGE" \
+        --user-assigned "$(identity id)" --registry-server $ACR.azurecr.io --registry-identity "$(identity id)" \
+        --ingress external --target-port 8000 --cpu 0.5 --memory 1Gi --min-replicas 0 --max-replicas 1 \
+        --env-vars STORAGE_ACCOUNT=$SA QUEUE_NAME=$QUEUE AZURE_CLIENT_ID="$(identity clientId)" -o none
+    az containerapp show -g $RG -n $TEST_API --query properties.configuration.ingress.fqdn -o tsv ;;
+
+10) # switch the live API to this image and the page queue (the website keeps its address)
+    az containerapp update -g $RG -n $API --image "$IMAGE" --set-env-vars QUEUE_NAME=$QUEUE -o none ;;
+
+11) # roll back: the live API to the image before pages were queued separately (TAG=dae3d51) and the old queue,
+    # which OLD_JOB still reads
+    az containerapp update -g $RG -n $API --image "$IMAGE" --set-env-vars QUEUE_NAME=$OLD_QUEUE -o none ;;
 
 *)  echo "unknown step: $1" >&2; exit 1 ;;
 esac

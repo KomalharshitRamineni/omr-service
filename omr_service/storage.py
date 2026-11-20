@@ -42,6 +42,18 @@ class AzureStore:
         except ResourceNotFoundError:
             return None
 
+    def create(self, name, data=b""):
+        """Writes the blob only if it does not exist yet; True if this call wrote it."""
+        from azure.core.exceptions import ResourceExistsError
+        try:
+            self._blobs.upload_blob(name, data, overwrite=False)
+            return True
+        except ResourceExistsError:
+            return False
+
+    def list(self, prefix):
+        return [b.name for b in self._blobs.list_blobs(name_starts_with=prefix)]
+
     def send(self, text):
         self._queue.send_message(text)
 
@@ -59,6 +71,13 @@ class AzureStore:
 
     def queue_length(self):
         return self._queue.get_queue_properties().approximate_message_count
+
+
+def _with_mtime(path):
+    try:
+        return os.path.getmtime(path), path
+    except FileNotFoundError:  # another worker took it while the folder was being read
+        return None
 
 
 class LocalStore:
@@ -82,12 +101,26 @@ class LocalStore:
         path = self._blobs / name
         return path.read_bytes() if path.is_file() else None
 
+    def create(self, name, data=b""):
+        path = self._blobs / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with open(path, "xb") as f:  # fails if it exists, even with another process racing
+                f.write(data)
+            return True
+        except FileExistsError:
+            return False
+
+    def list(self, prefix):
+        return sorted(str(p.relative_to(self._blobs)) for p in self._blobs.glob(prefix + "*")
+                      if p.is_file() and not p.name.endswith(".tmp"))
+
     def send(self, text):
         (self._queue / f"{uuid.uuid4().hex}__0__0").write_text(text)
 
     def receive(self, visibility_s):
         now = time.time()
-        for path in sorted(self._queue.iterdir(), key=os.path.getmtime):
+        for _, path in sorted(entry for entry in map(_with_mtime, self._queue.iterdir()) if entry):
             msg_id, count, visible_at = path.name.split("__")
             if float(visible_at) > now:
                 continue

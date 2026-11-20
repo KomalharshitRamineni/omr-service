@@ -1,13 +1,13 @@
 # OMR service
 
-Turns a PDF of sheet music into one MusicXML file. Each page is rendered with poppler's `pdftoppm`, read by [homr](https://github.com/liebharc/homr) 0.7.0 (run as a separate program, on the CPU), and the pages are joined into one score with music21.
+Turns a PDF of sheet music into one MusicXML file. Each page is rendered with poppler's `pdftoppm`, read by [homr](https://github.com/liebharc/homr) 0.7.1 (on the CPU, in separate processes that stay loaded between pages), and the pages are joined into one score with music21.
 
 Two programs share one Docker image:
 
 - the **API** (`uvicorn omr_service.app:app`) stores each upload and answers status requests;
-- the **worker** (`python -m omr_service.worker`) converts queued jobs, then exits when the queue is empty.
+- the **worker** (`python -m omr_service.worker`) converts queued pages, then exits when the queue is empty. Several workers can run at once.
 
-Jobs live in Azure Storage, not in memory: `jobs/<id>/input.pdf`, `status.json` and `result.musicxml` in a blob container, and the job's id on a queue. A job therefore carries on when the browser tab is closed, and survives restarts and scaling to zero. If the worker stops part-way, the job's message reappears on the queue and the job is retried, up to `MAX_ATTEMPTS` times. Finished jobs are kept unless `RESULT_TTL_SECONDS` is set. Each job records an `owner`, empty until the website has accounts.
+Jobs live in Azure Storage, not in memory: `jobs/<id>/input.pdf`, `status.json` and `result.musicxml` in a blob container, and one message per page on a queue, so the pages of one PDF are read at the same time by as many workers as are running. Each finished page is stored (`jobs/<id>/pages/`), and the worker that finishes the last page joins them. A job therefore carries on when the browser tab is closed, and survives restarts and scaling to zero. If a worker stops part-way, the page's message reappears on the queue and the page is retried, up to `MAX_ATTEMPTS` times, then skipped. Finished jobs are kept unless `RESULT_TTL_SECONDS` is set. Each job records an `owner`, empty until the website has accounts.
 
 ## API
 
@@ -35,9 +35,9 @@ Errors are JSON `{"error": "…"}`:
 | 413 | file over `MAX_UPLOAD_MB`, or more than `MAX_PAGES` pages |
 | 415 | not a PDF |
 | 422 | a PDF that can't be read |
-| 503 | `MAX_QUEUED_JOBS` jobs already queued or running; retry after `Retry-After` seconds |
+| 503 | `MAX_QUEUED_PAGES` pages already queued or being read; retry after `Retry-After` seconds |
 
-Browsers may call it only from the origins in `ALLOWED_ORIGINS`. Expect about 15–19 s per page on 2 CPUs (homr 0.7.1, measured on a laptop under a CPU limit; not a limit), less with `PAGE_WORKERS`, so poll every few seconds.
+Browsers may call it only from the origins in `ALLOWED_ORIGINS`. Expect about 15–19 s per page on 2 CPUs (homr 0.7.1, measured on a laptop under a CPU limit; not a limit), less with `PAGE_WORKERS` and several workers, so poll every few seconds.
 
 Example from the browser:
 
@@ -62,15 +62,16 @@ Every limit is a setting. The defaults are deliberately generous while we test; 
 | Variable | Default |
 |---|---|
 | `ALLOWED_ORIGINS` | `https://kind-island-00d8a3f03.2.azurestaticapps.net` (comma-separated) |
-| `HOMR_CMD` | homr through `omr_service.homr_runner` (sets its thread count) |
-| `PAGE_WORKERS` | `1` (pages converted at the same time; the Azure worker uses `2` on 4 vCPU) |
+| `HOMR_CMD` | not set: homr stays loaded between pages (`omr_service.homr_server`). Set, homr is started for every page with this command; `HOMR_SERVER=0` does the same with `omr_service.homr_runner` |
+| `USE_GPU` | `0` (`1` lets homr use the worker's GPU) |
+| `PAGE_WORKERS` | `1` (pages one worker converts at the same time; the Azure workers use `2` on 4 vCPU) |
 | `HOMR_THREADS` | ONNX Runtime threads per homr process; default: the container's CPUs divided by `PAGE_WORKERS` |
-| `MAX_UPLOAD_MB` / `MAX_PAGES` / `MAX_QUEUED_JOBS` | `100` / `200` / `100` |
+| `MAX_UPLOAD_MB` / `MAX_PAGES` / `MAX_QUEUED_PAGES` | `100` / `200` / `400` |
 | `RESULT_TTL_SECONDS` | `0` (keep finished jobs) |
 | `PAGE_TIMEOUT_SECONDS` / `RETRY_AFTER_SECONDS` / `RENDER_DPI` | `900` / `60` / `300` |
-| `MAX_ATTEMPTS` | `3` (deliveries of a job before the worker gives up) |
+| `MAX_ATTEMPTS` | `3` (deliveries of a page before it is skipped) |
 | `STORAGE_ACCOUNT` | empty: jobs go in a local folder, `STORE_DIR` (default: in the system temp folder) |
-| `BLOB_CONTAINER` / `QUEUE_NAME` | `jobs` / `omr-jobs` |
+| `BLOB_CONTAINER` / `QUEUE_NAME` | `jobs` / `omr-pages` |
 | `AZURE_CLIENT_ID` | in Azure, the managed identity's client ID; locally, sign-in comes from `az login` |
 | `WORK_DIR` | the system temp folder (temporary files while converting) |
 
@@ -93,7 +94,7 @@ Dependencies are pinned in `requirements.txt`; change `requirements.in` and run 
 
 ## Azure
 
-`deploy/azure.sh` creates everything, step by step: resource group, container registry and image, storage account (blob container and queue; Entra ID sign-in only, no shared keys), a managed identity with its permissions, a Container Apps environment, the API as a container app that scales to zero, and the worker as a Container Apps job started by queue messages.
+`deploy/azure.sh` creates everything, step by step: resource group, container registry and image, storage account (blob container and queue; Entra ID sign-in only, no shared keys), a managed identity with its permissions, a Container Apps environment, the API as a container app that scales to zero, and the worker as a Container Apps job started by queue messages: one run for every `PAGE_WORKERS` pages waiting, up to `MAX_WORKERS` runs at once. Step 9 adds a second API for trying a new image beside the live one, step 10 switches the live API to it, and step 11 rolls back to the previous worker.
 
 ## Credits and licence
 

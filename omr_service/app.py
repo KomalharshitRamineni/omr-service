@@ -76,7 +76,7 @@ def create_app(settings=None, store=None):
         status = find(job_id)
         if not status:
             return error(404, "unknown or expired job")
-        return jobs.public(status)
+        return jobs.public(jobs.with_progress(store, status))
 
     @app.get("/omr/{job_id}/musicxml")
     def result(job_id: str):

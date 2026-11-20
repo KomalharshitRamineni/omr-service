@@ -19,7 +19,8 @@ MUSICXML = """<?xml version="1.0" encoding="UTF-8"?>
 </score-partwise>
 """
 
-image = Path(sys.argv[-1])
-if image.stem in os.environ.get("FAKE_HOMR_FAIL", "").split(","):
-    sys.exit("no staffs found")
-image.with_suffix(".musicxml").write_text(MUSICXML)
+if __name__ == "__main__":
+    image = Path(sys.argv[-1])
+    if image.stem in os.environ.get("FAKE_HOMR_FAIL", "").split(","):
+        sys.exit("no staffs found")
+    image.with_suffix(".musicxml").write_text(MUSICXML)

@@ -1,6 +1,10 @@
 """Jobs are kept in storage, not in memory, so they survive restarts and scaling to zero.
-Each job has jobs/<id>/input.pdf, jobs/<id>/status.json and, once done, jobs/<id>/result.musicxml;
-its id goes on the queue, and a worker (worker.py) converts it."""
+
+Each job has jobs/<id>/input.pdf, jobs/<id>/status.json and, once done, jobs/<id>/result.musicxml. Each page
+is its own message on the queue, so several workers can read the pages of one PDF at the same time. A worker
+writes pages/pNN.start when it starts a page and pages/pNN.musicxml (or pages/pNN.error, the reason it was
+skipped) when it finishes; whoever finishes the last page joins them (worker.py). Only the API (on upload) and
+the joining worker write status.json; while a job runs, its progress is read from the page files."""
 
 import json
 import re
@@ -22,8 +26,33 @@ def blob(job_id, name):
     return f"jobs/{job_id}/{name}"
 
 
+def page_blob(job_id, page, kind):
+    """kind: "start", "musicxml" (the page as homr read it) or "error" (why it was skipped)."""
+    return blob(job_id, f"pages/p{page:03d}.{kind}")
+
+
+def page_message(job_id, page):
+    return json.dumps({"job": job_id, "page": page})
+
+
+def read_message(text):
+    """(job id, page) for a page message; (job id, None) for a whole-job message (an id on its own, as
+    sent before pages were queued separately)."""
+    if valid_id(text):
+        return text, None
+    data = json.loads(text)
+    if not valid_id(data["job"]) or not isinstance(data["page"], int) or data["page"] < 1:
+        raise ValueError("not a page message")
+    return data["job"], data["page"]
+
+
+def send_pages(store, job_id, pages_total):
+    for page in range(1, pages_total + 1):
+        store.send(page_message(job_id, page))
+
+
 def submit(store, settings, job_id, filename, pdf, pages_total, owner=None):
-    if store.queue_length() >= settings.max_queued_jobs:
+    if store.queue_length() + pages_total > settings.max_queued_pages:
         raise QueueFull
     store.put(blob(job_id, "input.pdf"), pdf, "application/pdf")
     status = {
@@ -34,7 +63,7 @@ def submit(store, settings, job_id, filename, pdf, pages_total, owner=None):
         "created": time.time(), "finished": None,
     }
     save(store, status)
-    store.send(job_id)
+    send_pages(store, job_id, pages_total)
     return status
 
 
@@ -45,6 +74,30 @@ def load(store, job_id):
 
 def save(store, status):
     store.put(blob(status["id"], "status.json"), json.dumps(status).encode(), "application/json")
+
+
+def page_files(store, job_id):
+    """{page: set of kinds written so far}."""
+    found = {}
+    for name in store.list(blob(job_id, "pages/")):
+        match = re.fullmatch(r".*/pages/p(\d+)\.(start|musicxml|error)", name)
+        if match:
+            found.setdefault(int(match[1]), set()).add(match[2])
+    return found
+
+
+def finished_pages(files):
+    return {page for page, kinds in files.items() if kinds & {"musicxml", "error"}}
+
+
+def with_progress(store, status):
+    """A queued or running job's status with its progress read from the page files."""
+    if status["status"] not in ("queued", "running"):
+        return status
+    files = page_files(store, status["id"])
+    if not files:
+        return status
+    return dict(status, status="running", pages_done=len(finished_pages(files)))
 
 
 def public(status):

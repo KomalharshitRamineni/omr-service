@@ -26,6 +26,14 @@ def _homr_cmd():
     return cmd
 
 
+def _homr_server_cmd():
+    # By default homr stays loaded between pages (homr_server). HOMR_CMD (homr started per page) or
+    # HOMR_SERVER=0 turns that off.
+    if "HOMR_CMD" in os.environ or os.environ.get("HOMR_SERVER", "1") == "0":
+        return None
+    return [sys.executable, "-m", "omr_service.homr_server"]
+
+
 def _quota(path, period_path=None):
     """CPUs allowed by one cgroup file, or None: v2 cpu.max ("400000 100000" = 4, "max 100000" = none)
     or v1 cpu.cfs_quota_us (-1 = none) with cpu.cfs_period_us."""
@@ -71,21 +79,25 @@ def _homr_threads():
 @dataclass(frozen=True)
 class Settings:
     homr_cmd: list[str] = field(default_factory=_homr_cmd)
+    homr_server_cmd: list[str] | None = field(default_factory=_homr_server_cmd)
+    # let homr use a GPU if the worker has one (otherwise it is hidden from homr)
+    use_gpu: bool = field(default_factory=lambda: os.environ.get("USE_GPU", "0") == "1")
     allowed_origins: list[str] = field(
         default_factory=lambda: [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", SITE_ORIGIN).split(",") if o.strip()]
     )
     # generous defaults while testing; tighten them later through the environment
     max_upload_mb: int = field(default_factory=lambda: _int("MAX_UPLOAD_MB", 100))
     max_pages: int = field(default_factory=lambda: _int("MAX_PAGES", 200))
-    max_queued_jobs: int = field(default_factory=lambda: _int("MAX_QUEUED_JOBS", 100))
+    # each page is a message on the queue, so the limit counts pages
+    max_queued_pages: int = field(default_factory=lambda: _int("MAX_QUEUED_PAGES", 400))
     # 0 keeps finished jobs
     result_ttl_s: int = field(default_factory=lambda: _int("RESULT_TTL_SECONDS", 0))
     page_timeout_s: int = field(default_factory=lambda: _int("PAGE_TIMEOUT_SECONDS", 900))
     retry_after_s: int = field(default_factory=lambda: _int("RETRY_AFTER_SECONDS", 60))
-    # deliveries of a job's message before the worker gives up on it
+    # deliveries of a page's message before the worker skips the page
     max_attempts: int = field(default_factory=lambda: _int("MAX_ATTEMPTS", 3))
     render_dpi: int = field(default_factory=lambda: _int("RENDER_DPI", 300))
-    # pages converted at the same time, each by its own homr process
+    # pages one worker converts at the same time, each by its own homr process
     page_workers: int = field(default_factory=lambda: max(1, _int("PAGE_WORKERS", 1)))
     # ONNX Runtime threads per homr process; by default the CPUs available divided by PAGE_WORKERS
     homr_threads: int = field(default_factory=_homr_threads)
@@ -94,5 +106,5 @@ class Settings:
     # jobs live in this Azure Storage account; if it is empty, in a local folder instead
     storage_account: str = field(default_factory=lambda: os.environ.get("STORAGE_ACCOUNT", ""))
     blob_container: str = field(default_factory=lambda: os.environ.get("BLOB_CONTAINER", "jobs"))
-    queue_name: str = field(default_factory=lambda: os.environ.get("QUEUE_NAME", "omr-jobs"))
+    queue_name: str = field(default_factory=lambda: os.environ.get("QUEUE_NAME", "omr-pages"))
     store_dir: Path = field(default_factory=lambda: Path(os.environ.get("STORE_DIR", Path(tempfile.gettempdir()) / "omr-store")))

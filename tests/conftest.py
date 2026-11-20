@@ -13,8 +13,8 @@ FAKE_HOMR = [sys.executable, str(Path(__file__).with_name("fake_homr.py"))]
 
 @pytest.fixture
 def settings(tmp_path):
-    return Settings(homr_cmd=FAKE_HOMR, allowed_origins=["https://site.example"], max_pages=3,
-                    max_queued_jobs=2, work_dir=tmp_path / "work", store_dir=tmp_path / "store",
+    return Settings(homr_cmd=FAKE_HOMR, homr_server_cmd=None, allowed_origins=["https://site.example"], max_pages=3,
+                    max_queued_pages=4, work_dir=tmp_path / "work", store_dir=tmp_path / "store",
                     storage_account="", render_dpi=20)
 
 
