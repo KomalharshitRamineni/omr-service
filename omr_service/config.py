@@ -108,3 +108,8 @@ class Settings:
     blob_container: str = field(default_factory=lambda: os.environ.get("BLOB_CONTAINER", "jobs"))
     queue_name: str = field(default_factory=lambda: os.environ.get("QUEUE_NAME", "omr-pages"))
     store_dir: Path = field(default_factory=lambda: Path(os.environ.get("STORE_DIR", Path(tempfile.gettempdir()) / "omr-store")))
+    # POST /warm (the upload page opening) queues a warm-up message: the worker it starts waits this long for
+    # pages, so a PDF uploaded meanwhile does not wait for a worker to start
+    warm_wait_s: int = field(default_factory=lambda: _int("WARM_WAIT_SECONDS", 60))
+    # at most one warm-up message per this many seconds, however many pages are opened
+    warm_every_s: int = field(default_factory=lambda: max(1, _int("WARM_EVERY_SECONDS", 60)))

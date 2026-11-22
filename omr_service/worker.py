@@ -9,7 +9,10 @@ worker that finishes a job's last page joins the pages into one score.
 A page's message stays on the queue, hidden, while the page is read, and is deleted only once the page's result
 (or the reason it was skipped) is stored. If the worker stops part-way, the message reappears and another run
 retries the page, up to MAX_ATTEMPTS deliveries; after that the page is skipped. If the worker stops while
-joining, the job stays "running" (the join is not retried)."""
+joining, the job stays "running" (the join is not retried).
+
+A warm-up message (POST /warm, sent when the upload page opens) starts a worker ahead of an upload: the worker
+that takes it starts its homr processes and waits up to WARM_WAIT_SECONDS for pages before exiting."""
 
 import logging
 import shutil
@@ -25,6 +28,21 @@ from .pipeline import ConversionError, Homr, convert_page, join_pages
 from .storage import make_store
 
 log = logging.getLogger("omr.worker")
+
+
+class Stay:
+    """Until when a worker waits for pages on an empty queue, after a warm-up message."""
+
+    def __init__(self):
+        self._until = 0.0
+        self._lock = threading.Lock()
+
+    def extend(self, seconds):
+        with self._lock:
+            self._until = max(self._until, time.time() + seconds)
+
+    def active(self):
+        return time.time() < self._until
 
 
 def finish(store, status, error=None, warnings=(), check_bars=()):
@@ -105,12 +123,19 @@ def convert_one_page(store, settings, homr, message, job_id, page):
     store.delete(message)
 
 
-def process_next(store, settings, homr=None):
-    """Converts one queued page (or splits a whole-job message into pages). Returns False when the queue is
-    empty."""
+def process_next(store, settings, homr=None, stay=None):
+    """Converts one queued page (or splits a whole-job message into pages, or takes a warm-up message).
+    Returns False when the queue is empty."""
     message = store.receive(settings.page_timeout_s + 300)  # hidden long enough for one page
     if not message:
         return False
+    if jobs.is_warm(message.text):
+        store.delete(message)
+        if stay is not None:
+            stay.extend(settings.warm_wait_s)
+        if homr is not None:
+            homr.start()
+        return True
     try:
         job_id, page = jobs.read_message(message.text)
     except (ValueError, KeyError, TypeError):
@@ -136,14 +161,14 @@ def process_next(store, settings, homr=None):
     return True
 
 
-def drain(store, settings, homr, max_errors=3):
+def drain(store, settings, homr, stay=None, max_errors=3):
     """Converts pages until the queue is empty. An unexpected error (storage, network) is logged and the loop
     goes on, so one slot is not lost; a page's message reappears after its lease. It stops after max_errors
     errors in a row."""
     errors = 0
     while errors < max_errors:
         try:
-            if not process_next(store, settings, homr):
+            if not process_next(store, settings, homr, stay):
                 return
             errors = 0
         except Exception:
@@ -152,25 +177,31 @@ def drain(store, settings, homr, max_errors=3):
             time.sleep(2 * errors)
 
 
+def run(store, settings, homr, watch=False):
+    """Converts pages until the queue is empty and no warm-up wait is running (or forever with watch)."""
+    stay = Stay()
+    while True:
+        # PAGE_WORKERS pages at once, each with its own homr process from the pool
+        threads = [threading.Thread(target=drain, args=(store, settings, homr, stay))
+                   for _ in range(settings.page_workers)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        waiting = stay.active()
+        if not watch and not waiting:
+            return
+        time.sleep(1 if waiting else 2)
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("azure").setLevel(logging.WARNING)  # the SDK logs every request at INFO
     settings = Settings()
     store = make_store(settings)
     homr = Homr(settings)
-    watch = "--watch" in sys.argv[1:]
     try:
-        while True:
-            # PAGE_WORKERS pages at once, each with its own homr process from the pool
-            threads = [threading.Thread(target=drain, args=(store, settings, homr))
-                       for _ in range(settings.page_workers)]
-            for thread in threads:
-                thread.start()
-            for thread in threads:
-                thread.join()
-            if not watch:
-                return
-            time.sleep(2)
+        run(store, settings, homr, watch="--watch" in sys.argv[1:])
     finally:
         homr.close()
 

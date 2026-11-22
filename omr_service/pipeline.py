@@ -86,9 +86,12 @@ class HomrServer:
             replies.put(line)
         replies.put(None)  # the process has ended
 
-    def convert(self, png, timeout):
+    def start(self):
         if self.proc is None or self.proc.poll() is not None:
             self._start()
+
+    def convert(self, png, timeout):
+        self.start()
         try:
             self.proc.stdin.write(f"{png}\n")
             self.proc.stdin.flush()
@@ -136,6 +139,21 @@ class Homr:
             return server.convert(png, s.page_timeout_s)
         finally:
             self._idle.put(server)
+
+    def start(self):
+        """Starts the idle homr processes now (Python and homr's imports) instead of on the first page."""
+        servers = []
+        while True:
+            try:
+                servers.append(self._idle.get_nowait())
+            except queue.Empty:
+                break
+        try:
+            for server in servers:
+                server.start()
+        finally:
+            for server in reversed(servers):  # back in the same order
+                self._idle.put(server)
 
     def close(self):
         while not self._idle.empty():

@@ -16,6 +16,7 @@ Jobs live in Azure Storage, not in memory: `jobs/<id>/input.pdf`, `status.json` 
 | `POST /omr`, multipart form, field `file` = the PDF | `202` + job status (below), `Location: /omr/{id}` |
 | `GET /omr/{id}` | `200` job status, always JSON |
 | `GET /omr/{id}/musicxml` | `200` the MusicXML (`application/vnd.recordare.musicxml+xml`), once `status` is `done` |
+| `POST /warm` | `202 {"warming": true}` when it starts a worker ahead of an upload; `false` when one is already starting or pages are being read |
 | `GET /health` | `200 {"status": "ok"}` |
 
 Job status:
@@ -23,6 +24,8 @@ Job status:
 ```json
 {"id": "b5f84d…", "status": "running", "pages_total": 2, "pages_done": 1, "error": null, "warnings": [], "check_bars": []}
 ```
+
+Call `POST /warm` when the upload page opens. A worker takes about 25 s to start (pulling the image and starting the container), so it starts while the user chooses the PDF; it then waits `WARM_WAIT_SECONDS` for pages before stopping. At most one is started per `WARM_EVERY_SECONDS`, however many pages are opened. Without it, an upload waits for a worker to start.
 
 `status` goes `queued` → `running` → `done` or `failed`. Pages homr can't read are skipped and listed in `warnings`. A job fails only if no page can be read. Once `done`, `check_bars` lists the bars (numbered from 1, as in the MusicXML) that hold more beats than their time signature: almost certainly misread, so the first places to correct. It does not list every error.
 
@@ -74,6 +77,7 @@ Every limit is a setting. The defaults are deliberately generous while we test; 
 | `BLOB_CONTAINER` / `QUEUE_NAME` | `jobs` / `omr-pages` |
 | `AZURE_CLIENT_ID` | in Azure, the managed identity's client ID; locally, sign-in comes from `az login` |
 | `WORK_DIR` | the system temp folder (temporary files while converting) |
+| `WARM_WAIT_SECONDS` / `WARM_EVERY_SECONDS` | `60` / `60` (how long a worker started by `POST /warm` waits for pages; at most one such worker per this many seconds) |
 
 ## Run locally
 

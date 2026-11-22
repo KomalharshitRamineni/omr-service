@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Creates the OMR service in Azure. Each step can be re-run. Run one step at a time with
-#   SUB=<subscription id> deploy/azure.sh <step>      (steps 1-7 create; step 8 updates; 9-11 below)
+#   SUB=<subscription id> deploy/azure.sh <step>      (steps 1-7 create; step 8 updates; 9-13 below)
 # Needs the Azure CLI signed in (`az login`) as someone who can create resources and assign roles.
 set -euo pipefail
 
@@ -20,6 +20,9 @@ QUEUE=omr-pages
 OLD_JOB=omr-worker
 OLD_QUEUE=omr-jobs
 TEST_API=omr-api-next
+# a queue and page worker of its own for TEST_API (step 12), so a new worker is tried without the live one
+TEST_QUEUE=omr-pages-next
+TEST_JOB=omr-page-worker-next
 TAG=${TAG:-$(git -C "$(dirname "$0")" rev-parse --short HEAD)}
 IMAGE=$ACR.azurecr.io/omr-service:$TAG
 # Worker size, pages converted at once, and how often its trigger checks the queue. 4 vCPU / 8 GiB alone was
@@ -35,6 +38,61 @@ MAX_WORKERS=10
 
 az() { command az "$@" --subscription "$SUB"; }
 identity() { az identity show -g $RG -n $ID --query "$1" -o tsv; }
+
+# page_job <job> <queue>: creates a page worker job that reads <queue> (step 7, step 12)
+page_job() {
+    yaml=$(mktemp --suffix .yaml)
+    cat > "$yaml" <<EOF
+location: $LOC
+identity:
+  type: UserAssigned
+  userAssignedIdentities:
+    "$(identity id)": {}
+properties:
+  environmentId: $(az containerapp env show -g $RG -n $ENV --query id -o tsv)
+  configuration:
+    triggerType: Event
+    replicaTimeout: 14400
+    replicaRetryLimit: 0
+    registries:
+      - server: $ACR.azurecr.io
+        identity: $(identity id)
+    eventTriggerConfig:
+      parallelism: 1
+      replicaCompletionCount: 1
+      scale:
+        minExecutions: 0
+        maxExecutions: $MAX_WORKERS
+        pollingInterval: $QUEUE_POLL_S
+        rules:
+          - name: queue
+            type: azure-queue
+            metadata:
+              accountName: $SA
+              queueName: $2
+              queueLength: "$PAGE_WORKERS"
+            identity: $(identity id)
+  template:
+    containers:
+      - name: worker
+        image: $IMAGE
+        command: ["python", "-m", "omr_service.worker"]
+        resources:
+          cpu: $WORKER_CPU
+          memory: $WORKER_MEMORY
+        env:
+          - name: STORAGE_ACCOUNT
+            value: $SA
+          - name: AZURE_CLIENT_ID
+            value: $(identity clientId)
+          - name: QUEUE_NAME
+            value: $2
+          - name: PAGE_WORKERS
+            value: "$PAGE_WORKERS"
+EOF
+    az containerapp job create -g $RG -n $1 --yaml "$yaml" -o none
+    rm -f "$yaml"
+}
 
 case ${1:?give a step number} in
 1)  # resource group
@@ -82,57 +140,7 @@ case ${1:?give a step number} in
 7)  # page worker: a Container Apps job started by queue messages (checked every $QUEUE_POLL_S s), one run per
     # PAGE_WORKERS pages waiting, up to MAX_WORKERS runs; each run converts pages until the queue is empty.
     # Retries come from the queue (MAX_ATTEMPTS), not from the job.
-    yaml=$(mktemp --suffix .yaml)
-    cat > "$yaml" <<EOF
-location: $LOC
-identity:
-  type: UserAssigned
-  userAssignedIdentities:
-    "$(identity id)": {}
-properties:
-  environmentId: $(az containerapp env show -g $RG -n $ENV --query id -o tsv)
-  configuration:
-    triggerType: Event
-    replicaTimeout: 14400
-    replicaRetryLimit: 0
-    registries:
-      - server: $ACR.azurecr.io
-        identity: $(identity id)
-    eventTriggerConfig:
-      parallelism: 1
-      replicaCompletionCount: 1
-      scale:
-        minExecutions: 0
-        maxExecutions: $MAX_WORKERS
-        pollingInterval: $QUEUE_POLL_S
-        rules:
-          - name: queue
-            type: azure-queue
-            metadata:
-              accountName: $SA
-              queueName: $QUEUE
-              queueLength: "$PAGE_WORKERS"
-            identity: $(identity id)
-  template:
-    containers:
-      - name: worker
-        image: $IMAGE
-        command: ["python", "-m", "omr_service.worker"]
-        resources:
-          cpu: $WORKER_CPU
-          memory: $WORKER_MEMORY
-        env:
-          - name: STORAGE_ACCOUNT
-            value: $SA
-          - name: AZURE_CLIENT_ID
-            value: $(identity clientId)
-          - name: QUEUE_NAME
-            value: $QUEUE
-          - name: PAGE_WORKERS
-            value: "$PAGE_WORKERS"
-EOF
-    az containerapp job create -g $RG -n $JOB --yaml "$yaml" -o none
-    rm -f "$yaml" ;;
+    page_job $JOB $QUEUE ;;
 
 8)  # update after a commit: build the image, point the API and the page worker at it, apply the worker settings
     az acr build -r $ACR -t omr-service:$TAG -t omr-service:latest "$(dirname "$0")/.."
@@ -154,6 +162,23 @@ EOF
 11) # roll back: the live API to the image before pages were queued separately (TAG=dae3d51) and the old queue,
     # which OLD_JOB still reads
     az containerapp update -g $RG -n $API --image "$IMAGE" --set-env-vars QUEUE_NAME=$OLD_QUEUE -o none ;;
+
+12) # the test stack for this image: TEST_QUEUE and TEST_JOB (created the first time, updated after), and
+    # TEST_API (step 9) pointed at them; builds the image if the registry does not have it yet. The live API
+    # and page worker are not touched.
+    az acr repository show-tags -n $ACR --repository omr-service -o tsv | grep -qx "$TAG" \
+        || az acr build -r $ACR -t omr-service:$TAG "$(dirname "$0")/.."
+    az storage queue create -n $TEST_QUEUE --account-name $SA --auth-mode login -o none
+    if az containerapp job show -g $RG -n $TEST_JOB -o none 2>/dev/null; then
+        az containerapp job update -g $RG -n $TEST_JOB --image "$IMAGE" -o none
+    else
+        page_job $TEST_JOB $TEST_QUEUE
+    fi
+    az containerapp update -g $RG -n $TEST_API --image "$IMAGE" --set-env-vars QUEUE_NAME=$TEST_QUEUE -o none ;;
+
+13) # switch the live API and page worker to an image already built (step 12), keeping their settings
+    az containerapp job update -g $RG -n $JOB --image "$IMAGE" -o none
+    az containerapp update -g $RG -n $API --image "$IMAGE" --set-env-vars QUEUE_NAME=$QUEUE -o none ;;
 
 *)  echo "unknown step: $1" >&2; exit 1 ;;
 esac

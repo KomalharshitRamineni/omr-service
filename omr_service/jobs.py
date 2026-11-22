@@ -46,6 +46,29 @@ def read_message(text):
     return data["job"], data["page"]
 
 
+WARM_MESSAGE = json.dumps({"warm": True})
+
+
+def is_warm(text):
+    try:
+        return json.loads(text) == {"warm": True}
+    except ValueError:
+        return False
+
+
+def warm(store, settings):
+    """Queues a warm-up message, which starts a worker that then waits for pages (worker.py). Not sent while
+    pages are queued or being read (workers are starting anyway), nor more than once per WARM_EVERY_SECONDS.
+    Returns True if sent."""
+    if store.queue_length() > 0:
+        return False
+    window = int(time.time() // settings.warm_every_s)
+    if not store.create(f"warm/{window}"):  # another caller warmed in this window
+        return False
+    store.send(WARM_MESSAGE)
+    return True
+
+
 def send_pages(store, job_id, pages_total):
     for page in range(1, pages_total + 1):
         store.send(page_message(job_id, page))

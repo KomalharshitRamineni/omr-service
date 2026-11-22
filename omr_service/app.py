@@ -1,5 +1,6 @@
-"""HTTP API: POST /omr (a PDF) -> job; GET /omr/{id} -> status; GET /omr/{id}/musicxml -> result.
-The API only stores jobs and reads them back; worker.py converts them."""
+"""HTTP API: POST /omr (a PDF) -> job; GET /omr/{id} -> status; GET /omr/{id}/musicxml -> result;
+POST /warm -> starts a worker ahead of an upload. The API only stores jobs and reads them back; worker.py
+converts them."""
 
 import re
 import tempfile
@@ -45,6 +46,12 @@ def create_app(settings=None, store=None):
     @app.get("/health")
     def health():
         return {"status": "ok"}
+
+    @app.post("/warm", status_code=202)
+    def warm():
+        """The upload page calls this when it opens, so that a worker is starting (about 25 s) while a PDF is
+        chosen. {"warming": false} when one is already starting or pages are being read."""
+        return {"warming": jobs.warm(store, settings)}
 
     @app.post("/omr", status_code=202)
     def submit(file: UploadFile = File(...)):
