@@ -27,7 +27,7 @@ Job status:
 
 Call `POST /warm` when the upload page opens. A worker takes about 25 s to start (pulling the image and starting the container), so it starts while the user chooses the PDF; it then waits `WARM_WAIT_SECONDS` for pages before stopping. At most one is started per `WARM_EVERY_SECONDS`, however many pages are opened. Without it, an upload waits for a worker to start.
 
-`status` goes `queued` → `running` → `done` or `failed`. Pages homr can't read are skipped and listed in `warnings`. A job fails only if no page can be read. Once `done`, `check_bars` lists the bars (numbered from 1, as in the MusicXML) that hold more beats than their time signature: almost certainly misread, so the first places to correct. It does not list every error.
+`status` goes `queued` → `running` → `done` or `failed`. Pages homr can't read are skipped and listed in `warnings`. So is a time signature the score does not print at the start: the service then writes the shortest usual time signature that most bars fit in, and says it is a guess. A job fails only if no page can be read. Once `done`, `check_bars` lists the bars (numbered from 1, as in the MusicXML) that hold more beats than their time signature: almost certainly misread, so the first places to correct. It does not list every error.
 
 Errors are JSON `{"error": "…"}`:
 
